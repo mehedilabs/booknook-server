@@ -207,46 +207,75 @@ app.get("/auth-check", authenticateUser, (_req, res) => {
   });
 });
 
-app.get("/books", async (req, res) => {
-  try {
-    const db = await connectToDatabase();
+app.get(
+  "/books",
+  (req: Request, res: Response, next: NextFunction) => {
+    if (req.query.mine === "true") {
+      authenticateUser(req, res, next);
+      return;
+    }
 
-    const limitParam = req.query.limit;
-    const limit = Number(limitParam);
+    next();
+  },
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const db = await connectToDatabase();
 
-    let query = db
-      .collection("books")
-      .find({})
-      .sort({ createdAt: -1 });
+      const limitParam = req.query.limit;
+      const limit = Number(limitParam);
 
-    if (limitParam !== undefined) {
-      if (!Number.isInteger(limit) || limit < 1) {
+      if (
+        req.query.mine !== undefined &&
+        req.query.mine !== "true" &&
+        req.query.mine !== "false"
+      ) {
         res.status(400).json({
           success: false,
-          message: "Limit must be a positive integer.",
+          message: "Invalid mine parameter.",
         });
         return;
       }
 
-      query = query.limit(limit);
+      let filter = {};
+
+      if (req.query.mine === "true") {
+        filter = { userId: res.locals.authUser.id };
+      }
+
+      let query = db
+        .collection("books")
+        .find(filter)
+        .sort({ createdAt: -1 });
+
+      if (limitParam !== undefined) {
+        if (!Number.isInteger(limit) || limit < 1) {
+          res.status(400).json({
+            success: false,
+            message: "Limit must be a positive integer.",
+          });
+          return;
+        }
+
+        query = query.limit(limit);
+      }
+
+      const books = await query.toArray();
+
+      res.status(200).json({
+        success: true,
+        message: "Books fetched successfully.",
+        data: books,
+      });
+    } catch (error) {
+      console.error("Failed to fetch books:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch books.",
+      });
     }
-
-    const books = await query.toArray();
-
-    res.status(200).json({
-      success: true,
-      message: "Books fetched successfully.",
-      data: books,
-    });
-  } catch (error) {
-    console.error("Failed to fetch books:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch books.",
-    });
   }
-});
+);
 
 app.get("/books/:id", async (req, res) => {
   try {
