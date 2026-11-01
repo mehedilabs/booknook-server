@@ -419,6 +419,7 @@ app.post(
         availableCopies: copies,
         description: description.trim(),
         image: uploadedImage.imageUrl,
+        imagePublicId: uploadedImage.publicId,
         userId: res.locals.authUser.id,
         userName: res.locals.authUser.name,
         userEmail: res.locals.authUser.email,
@@ -453,6 +454,287 @@ app.post(
     }
   }
 );
+
+// Update an Existing Book
+app.patch(
+  "/books/:id",
+  authenticateUser,
+  (req: Request, res: Response, next: NextFunction) => {
+    upload.single("image")(req, res, (error) => {
+      if (error instanceof multer.MulterError) {
+        const message =
+          error.code === "LIMIT_FILE_SIZE"
+            ? "Image size must be 5 MB or smaller."
+            : error.message;
+
+        res.status(400).json({
+          success: false,
+          message,
+        });
+        return;
+      }
+
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Invalid image upload.",
+        });
+        return;
+      }
+
+      next();
+    });
+  },
+  async (req: Request, res: Response): Promise<void> => {
+    let uploadedPublicId: string | null = null;
+    let updateSucceeded = false;
+
+    try {
+  const id = req.params.id;
+
+   if (typeof id !== "string" || !/^[0-9a-fA-F]{24}$/.test(id)) {
+    res.status(400).json({
+    success: false,
+    message: "Invalid book ID.",
+    });
+    return;
+     }
+
+      const db = await connectToDatabase();
+      const booksCollection = db.collection("books");
+
+      const book = await booksCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!book) {
+        res.status(404).json({
+          success: false,
+          message: "Book not found.",
+        });
+        return;
+      }
+
+      if (book.userId !== res.locals.authUser.id) {
+        res.status(403).json({
+          success: false,
+          message: "You can only update your own books.",
+        });
+        return;
+      }
+
+      const {
+        title,
+        author,
+        category,
+        totalCopies,
+        description,
+      } = req.body ?? {};
+
+      const allowedCategories = [
+        "Fiction",
+        "Science",
+        "History",
+        "Kids",
+        "Others",
+      ];
+
+      const updateData: Record<string, unknown> = {};
+
+      if (title !== undefined) {
+        if (typeof title !== "string" || !title.trim()) {
+          res.status(400).json({
+            success: false,
+            message: "Book title cannot be empty.",
+          });
+          return;
+        }
+
+        updateData.title = title.trim();
+      }
+
+      if (author !== undefined) {
+        if (typeof author !== "string" || !author.trim()) {
+          res.status(400).json({
+            success: false,
+            message: "Author name cannot be empty.",
+          });
+          return;
+        }
+
+        updateData.author = author.trim();
+      }
+
+      if (category !== undefined) {
+        if (
+          typeof category !== "string" ||
+          !allowedCategories.includes(category)
+        ) {
+          res.status(400).json({
+            success: false,
+            message: "Invalid book category.",
+          });
+          return;
+        }
+
+        updateData.category = category;
+      }
+
+      if (description !== undefined) {
+        if (
+          typeof description !== "string" ||
+          !description.trim()
+        ) {
+          res.status(400).json({
+            success: false,
+            message: "Book description cannot be empty.",
+          });
+          return;
+        }
+
+        updateData.description = description.trim();
+      }
+
+      const currentTotalCopies = Number(book.totalCopies);
+      const currentAvailableCopies = Number(
+        book.availableCopies ?? book.totalCopies,
+      );
+
+      const borrowedCopies =
+        currentTotalCopies - currentAvailableCopies;
+
+      if (
+        !Number.isInteger(currentTotalCopies) ||
+        !Number.isInteger(currentAvailableCopies) ||
+        borrowedCopies < 0
+      ) {
+        res.status(409).json({
+          success: false,
+          message: "Book copy information is invalid.",
+        });
+        return;
+      }
+
+      if (totalCopies !== undefined) {
+        const newTotalCopies = Number(totalCopies);
+
+        if (
+          !Number.isInteger(newTotalCopies) ||
+          newTotalCopies < 1
+        ) {
+          res.status(400).json({
+            success: false,
+            message: "Total copies must be a positive integer.",
+          });
+          return;
+        }
+
+        if (newTotalCopies < borrowedCopies) {
+          res.status(400).json({
+            success: false,
+            message:
+              "Total copies cannot be less than the number of borrowed copies.",
+          });
+          return;
+        }
+
+        updateData.totalCopies = newTotalCopies;
+        updateData.availableCopies =
+          newTotalCopies - borrowedCopies;
+      }
+
+      if (!req.file && Object.keys(updateData).length === 0) {
+        res.status(400).json({
+          success: false,
+          message: "Please provide at least one field to update.",
+        });
+        return;
+      }
+
+      if (req.file) {
+        const uploadedImage = await uploadBookImage(req.file);
+
+        uploadedPublicId = uploadedImage.publicId;
+        updateData.image = uploadedImage.imageUrl;
+        updateData.imagePublicId = uploadedImage.publicId;
+      }
+
+      const updateResult = await booksCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          userId: res.locals.authUser.id,
+          totalCopies: book.totalCopies,
+          availableCopies: book.availableCopies,
+        },
+        {
+          $set: updateData,
+        },
+      );
+
+      if (updateResult.matchedCount === 0) {
+        if (uploadedPublicId) {
+          await cloudinary.uploader.destroy(uploadedPublicId);
+          uploadedPublicId = null;
+        }
+
+        res.status(409).json({
+          success: false,
+          message:
+            "Book information changed. Please refresh and try again.",
+        });
+        return;
+      }
+
+      updateSucceeded = true;
+
+  
+      if (
+        uploadedPublicId &&
+        typeof book.imagePublicId === "string"
+      ) {
+        try {
+          await cloudinary.uploader.destroy(book.imagePublicId);
+        } catch (cleanupError) {
+          console.error(
+            "Old Cloudinary image cleanup failed:",
+            cleanupError,
+          );
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Book updated successfully.",
+        data: {
+          ...book,
+          ...updateData,
+        },
+      });
+    } catch (error) {
+      if (uploadedPublicId && !updateSucceeded) {
+        try {
+          await cloudinary.uploader.destroy(uploadedPublicId);
+        } catch (cleanupError) {
+          console.error(
+            "New Cloudinary image cleanup failed:",
+            cleanupError,
+          );
+        }
+      }
+
+      console.error("Update book error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to update book. Please try again.",
+      });
+    }
+  },
+);
+
 
 // লোকাল ডেভেলপমেন্টের জন্য app.listen, Vercel-এ এটি ইগনোর হবে
 if (process.env.NODE_ENV !== "production") {
