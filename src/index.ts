@@ -9,6 +9,7 @@ import dotenv from "dotenv";
 import { MongoClient, ObjectId, type Db } from "mongodb";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { v2 as cloudinary } from "cloudinary";
+import multer from "multer";
 
 dotenv.config();
 
@@ -41,6 +42,50 @@ cloudinary.config({
   api_secret: cloudinaryApiSecret,
 });
 
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, callback) => {
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      callback(new Error("Only JPG, PNG, and WEBP images are allowed."));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+
+const uploadBookImage = (
+  file: Express.Multer.File
+): Promise<{ imageUrl: string; publicId: string }> => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: "booknook/books",
+        resource_type: "image",
+      },
+      (error, result) => {
+        if (error || !result) {
+          reject(error ?? new Error("Image upload failed."));
+          return;
+        }
+
+        resolve({
+          imageUrl: result.secure_url,
+          publicId: result.public_id,
+        });
+      }
+    );
+
+    uploadStream.end(file.buffer);
+  });
+};
 
 const client = new MongoClient(mongoConnectionString);
 
@@ -243,6 +288,142 @@ app.get("/books/:id", async (req, res) => {
     });
   }
 });
+
+// Add a New Book
+app.post(
+  "/books",
+  authenticateUser,
+  (req: Request, res: Response, next: NextFunction) => {
+    upload.single("image")(req, res, (error) => {
+      if (error instanceof multer.MulterError) {
+        const message =
+          error.code === "LIMIT_FILE_SIZE"
+            ? "Image size must be 5 MB or smaller."
+            : error.message;
+
+        res.status(400).json({
+          success: false,
+          message,
+        });
+        return;
+      }
+
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Invalid image upload.",
+        });
+        return;
+      }
+
+      next();
+    });
+  },
+  async (req: Request, res: Response): Promise<void> => {
+    let uploadedPublicId: string | null = null;
+
+    try {
+     const { title, author, category, totalCopies, description } =
+            req.body ?? {};
+
+      if (
+        !title?.trim() ||
+        !author?.trim() ||
+        !category?.trim() ||
+        !totalCopies ||
+        !description?.trim()
+      ) {
+        res.status(400).json({
+          success: false,
+          message: "All fields are required.",
+        });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          message: "Book cover image is required.",
+        });
+        return;
+      }
+
+      const allowedCategories = [
+        "Fiction",
+        "Science",
+        "History",
+        "Kids",
+        "Others",
+      ];
+
+      if (!allowedCategories.includes(category)) {
+        res.status(400).json({
+          success: false,
+          message: "Invalid book category.",
+        });
+        return;
+      }
+
+      const copies = Number(totalCopies);
+
+      if (!Number.isInteger(copies) || copies < 1) {
+        res.status(400).json({
+          success: false,
+          message: "Total copies must be a positive integer.",
+        });
+        return;
+      }
+
+      const uploadedImage = await uploadBookImage(req.file);
+      uploadedPublicId = uploadedImage.publicId;
+
+      const db = await connectToDatabase();
+
+      const newBook = {
+        title: title.trim(),
+        author: author.trim(),
+        category,
+        totalCopies: copies,
+        availableCopies: copies,
+        description: description.trim(),
+        image: uploadedImage.imageUrl,
+        userId: res.locals.authUser.id,
+        userName: res.locals.authUser.name,
+        userEmail: res.locals.authUser.email,
+        createdAt: new Date(),
+      };
+
+      const result = await db.collection("books").insertOne(newBook);
+
+      res.status(201).json({
+        success: true,
+        message: "Book added successfully.",
+        data: {
+          _id: result.insertedId,
+          ...newBook,
+        },
+      });
+    } catch (error) {
+      if (uploadedPublicId) {
+        try {
+          await cloudinary.uploader.destroy(uploadedPublicId);
+        } catch (cleanupError) {
+          console.error("Cloudinary cleanup failed:", cleanupError);
+        }
+      }
+
+      console.error("Add book error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to add book. Please try again.",
+      });
+    }
+  }
+);
 
 // লোকাল ডেভেলপমেন্টের জন্য app.listen, Vercel-এ এটি ইগনোর হবে
 if (process.env.NODE_ENV !== "production") {
