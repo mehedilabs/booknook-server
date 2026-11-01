@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { MongoClient, type Db } from "mongodb";
+import { MongoClient, ObjectId, type Db } from "mongodb";
 
 dotenv.config();
 
@@ -87,6 +87,49 @@ app.get("/books", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch books.",
+    });
+  }
+});
+
+
+app.get("/books/:id", async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+
+    const { id } = req.params;
+
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid book ID.",
+      });
+      return;
+    }
+
+    const book = await db.collection("books").findOne({
+      _id: new ObjectId(id),
+    });
+
+    
+    if (!book) {
+      res.status(404).json({
+        success: false,
+        message: "Book not found.",
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Book fetched successfully.",
+      data: book,
+    });
+  } catch (error) {
+    console.error("Failed to fetch book:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch book.",
     });
   }
 });
