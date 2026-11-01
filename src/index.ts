@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,7 +8,6 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 
-// MongoDB connection
 const mongoConnectionString = process.env.MONGODB_URI;
 
 if (!mongoConnectionString) {
@@ -18,15 +16,20 @@ if (!mongoConnectionString) {
 
 const client = new MongoClient(mongoConnectionString);
 
-let db: Db;
+// Vercel-এর জন্য ডাটাবেস কানেকশন ক্যাশ করা
+let cachedDb: Db | null = null;
 
-// Book types
-type BookCategory =
-  | "Fiction"
-  | "Science"
-  | "History"
-  | "Kids"
-  | "Others";
+const connectToDatabase = async (): Promise<Db> => {
+  if (cachedDb) {
+    return cachedDb;
+  }
+  await client.connect();
+  cachedDb = client.db("booknook_library");
+  console.log("MongoDB connected successfully!");
+  return cachedDb;
+};
+
+type BookCategory = "Fiction" | "Science" | "History" | "Kids" | "Others";
 
 interface Book {
   _id?: string;
@@ -41,22 +44,18 @@ interface Book {
   totalCopies: number;
 }
 
-type CreateBookInput = Omit<
-  Book,
-  "_id" | "userName" | "userEmail" | "createdAt"
->;
-
 app.use(cors());
 app.use(express.json());
 
-// Server health check
 app.get("/", (_req, res) => {
   res.send("BookNook Server is running!");
 });
 
-// GET /books - Get all books
 app.get("/books", async (req, res) => {
   try {
+    // এখানে ডাটাবেস কানেক্ট করা হচ্ছে (যদি আগে থেকে কানেক্টেড না থাকে)
+    const db = await connectToDatabase();
+
     const limitParam = req.query.limit;
     const limit = Number(limitParam);
 
@@ -73,7 +72,6 @@ app.get("/books", async (req, res) => {
         });
         return;
       }
-
       query = query.limit(limit);
     }
 
@@ -86,7 +84,6 @@ app.get("/books", async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to fetch books:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to fetch books.",
@@ -94,24 +91,12 @@ app.get("/books", async (req, res) => {
   }
 });
 
-// Start server
-const startServer = async () => {
-  try {
-    await client.connect();
+// লোকাল ডেভেলপমেন্টের জন্য app.listen, Vercel-এ এটি ইগনোর হবে
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`BookNook server is running on port ${PORT}`);
+  });
+}
 
-    db = client.db("booknook_library");
-
-    console.log("MongoDB connected successfully!");
-
-    app.listen(PORT, () => {
-      console.log(`BookNook server is running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error("Server startup failed:", error);
-    process.exit(1);
-  }
-};
-
-startServer();
-
+// Vercel-এর জন্য অ্যাপ এক্সপোর্ট
 export default app;
