@@ -736,6 +736,86 @@ app.patch(
 );
 
 
+
+app.delete(
+  "/books/:id",
+  authenticateUser,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id = req.params.id;
+
+      if (typeof id !== "string" || !/^[0-9a-fA-F]{24}$/.test(id)) {
+        res.status(400).json({
+          success: false,
+          message: "Invalid book ID.",
+        });
+        return;
+      }
+
+      const db = await connectToDatabase();
+      const booksCollection = db.collection("books");
+
+      const book = await booksCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!book) {
+        res.status(404).json({
+          success: false,
+          message: "Book not found.",
+        });
+        return;
+      }
+
+      if (book.userId !== res.locals.authUser.id) {
+        res.status(403).json({
+          success: false,
+          message: "You can only delete your own books.",
+        });
+        return;
+      }
+
+      const deleteResult = await booksCollection.deleteOne({
+        _id: new ObjectId(id),
+        userId: res.locals.authUser.id,
+      });
+
+      if (deleteResult.deletedCount === 0) {
+        res.status(409).json({
+          success: false,
+          message: "Book could not be deleted. Please try again.",
+        });
+        return;
+      }
+
+      if (typeof book.imagePublicId === "string") {
+        try {
+          await cloudinary.uploader.destroy(book.imagePublicId);
+        } catch (cleanupError) {
+          console.error(
+            "Cloudinary image cleanup failed:",
+            cleanupError,
+          );
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Book deleted successfully.",
+      });
+    } catch (error) {
+      console.error("Delete book error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to delete book. Please try again.",
+      });
+    }
+  },
+);
+
+
+
 // লোকাল ডেভেলপমেন্টের জন্য app.listen, Vercel-এ এটি ইগনোর হবে
 if (process.env.NODE_ENV !== "production") {
   app.listen(PORT, () => {
