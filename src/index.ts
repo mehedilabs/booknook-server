@@ -199,13 +199,7 @@ app.get("/", (_req, res) => {
   res.send("BookNook Server is running!");
 });
 
-app.get("/auth-check", authenticateUser, (_req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Authentication successful.",
-    user: res.locals.authUser,
-  });
-});
+
 
 app.get(
   "/books",
